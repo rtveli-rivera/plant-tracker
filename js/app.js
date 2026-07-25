@@ -12,6 +12,7 @@ import { welcomeMessage, careTips, scheduleWarnings, wateringAmount, pruningRepo
 import { buildHandoff, parseHandoffImport, SUMMARY_PROMPT, speciesPrompt, parseSpeciesImport } from './handoff.js';
 import { unitSwitchMessage } from './quips.js';
 import { analyzePlant, lookupSpeciesCare, hasApiKey, AI_MODELS, AIError } from './ai.js';
+import * as native from './native.js';
 
 const app = document.getElementById('app');
 
@@ -2313,29 +2314,49 @@ route(/^\/settings$/, async () => {
   ]));
 
   // Notifications
+  const notifEnabled = native.isNative
+    ? settings.notifications
+    : settings.notifications && ('Notification' in window) && Notification.permission === 'granted';
   const notifBtn = el('button', { class: 'btn btn-secondary', onClick: async () => {
+    // Native app: use the OS notification permission, then (re-)schedule the
+    // on-device daily reminders. Web: the browser Notification permission.
+    if (native.isNative) {
+      const ok = await native.requestNativePermission();
+      if (ok) { saveSettings({ notifications: true }); await rearmNative(); toast('Reminders on'); render(); }
+      else toast('Permission denied');
+      return;
+    }
     if (!('Notification' in window)) { toast('Notifications not supported here'); return; }
     const perm = await Notification.requestPermission();
     if (perm === 'granted') { saveSettings({ notifications: true }); toast('Reminders on'); render(); }
     else toast('Permission denied');
-  } }, settings.notifications && Notification.permission === 'granted' ? '✅ Reminders enabled' : 'Enable reminders');
+  } }, notifEnabled ? '✅ Reminders enabled' : 'Enable reminders');
   const testBtn = el('button', { class: 'btn btn-ghost', onClick: sendTestReminder }, 'Send a test reminder');
-  // Live status line — surfaces whether background reminders are actually armed,
-  // so a silent "never registered / blocked" state stops being invisible.
-  const bgStatus = el('div', { class: 'hint', 'data-noloc': '' }, 'Checking background reminders…');
-  backgroundSyncStatus().then((s) => {
-    const msg = {
+  // Live status line — surfaces whether reminders are actually armed, so a silent
+  // "never registered / blocked" state stops being invisible.
+  const bgStatus = el('div', { class: 'hint', 'data-noloc': '' }, 'Checking reminders…');
+  (native.isNative ? native.nativeNotificationStatus() : backgroundSyncStatus()).then((s) => {
+    const nativeMsg = {
+      active: '✅ Reminders are scheduled on your device. A daily summary appears at 9:00 whenever a plant needs care — even when the app is closed.',
+      inactive: '⏳ Tap “Enable reminders” to let the app schedule daily plant-care notifications right on your device.',
+      blocked: '⚠️ Notifications are turned off for this app in your phone’s settings, so reminders can’t appear. Turn them on in Settings › Apps › Plant Tracker › Notifications.',
+      unsupported: 'ℹ️ Notifications aren’t available on this device.',
+    };
+    const webMsg = {
       active: '✅ Background reminders are active — Chrome may wake the app about once a day (it decides the exact timing, and can skip it to save battery).',
       inactive: '⏳ Background reminders aren’t running yet. Chrome turns them on automatically as you use the app more; until then you’re reminded when you open it. Tap “Send a test reminder” to confirm the reminder itself works.',
       blocked: '⚠️ Background reminders are blocked in this browser’s settings, so you’ll only be reminded when you open the app.',
       unsupported: 'ℹ️ This device can’t run background reminders (that needs an installed Android/Chrome app), so you’ll be reminded when you open or return to the app.',
-    }[s.code] || '';
-    bgStatus.textContent = msg;
+    };
+    bgStatus.textContent = (native.isNative ? nativeMsg : webMsg)[s.code] || '';
   }).catch(() => { bgStatus.textContent = ''; });
+  const remindersHint = native.isNative
+    ? 'Reminders are scheduled right on your device, so they arrive even when the app is closed — no internet needed. You’ll get a daily summary at 9:00 whenever something needs care.'
+    : 'You’ll always get a “what needs care today” summary when you open or return to the app. On an installed Android app, it can also remind you about once a day in the background (Chrome decides the exact timing). iPhone doesn’t allow background reminders without a server, so there it’s open/reopen only.';
   view.append(settingsGroup('Reminders', [
     notifBtn,
     testBtn,
-    el('div', { class: 'hint' }, 'You’ll always get a “what needs care today” summary when you open or return to the app. On an installed Android app, it can also remind you about once a day in the background (Chrome decides the exact timing). iPhone doesn’t allow background reminders without a server, so there it’s open/reopen only.'),
+    el('div', { class: 'hint' }, remindersHint),
     bgStatus,
   ]));
 
@@ -2530,6 +2551,23 @@ async function backgroundSyncStatus() {
 // never masks a switched-off reminder.
 async function sendTestReminder() {
   const nl = getLang() === 'nl';
+  // Native app: schedule a one-off notification through the OS to prove the
+  // on-device delivery path works (permission → channel → notification).
+  if (native.isNative) {
+    const shown = await native.sendTestNotification({ lang: getLang() });
+    if (!shown) {
+      toast(nl ? 'Kon de test niet tonen — staan meldingen aan voor de app?' : 'Couldn’t show the test — are the app’s notifications allowed?');
+      return;
+    }
+    if (!getSettings().notifications) {
+      showTapPopup(nl
+        ? 'De test werkt — maar je dagelijkse herinneringen staan UIT. Zet “Herinneringen” aan om ze echt te ontvangen.'
+        : 'The test works — but your daily reminders are OFF. Turn on “Reminders” to actually receive them.');
+    } else {
+      toast(nl ? 'Testmelding verstuurd (verschijnt zo)' : 'Test reminder sent (appears shortly)');
+    }
+    return;
+  }
   if (!('Notification' in window)) { toast(nl ? 'Meldingen worden hier niet ondersteund' : 'Notifications not supported here'); return; }
   let perm = Notification.permission;
   if (perm !== 'granted') perm = await Notification.requestPermission();
@@ -2690,6 +2728,16 @@ async function checkReminders() {
   await showReminderNotification(msg);
 }
 
+// Native (installed app) reminder scheduling: pre-schedule the next 30 days of
+// daily care summaries so they fire even when the app is fully closed — the OS
+// alarm clock delivers them, no server or push needed. No-op on the web, where
+// checkReminders + the service worker handle notifications instead.
+async function rearmNative() {
+  const settings = getSettings();
+  const [plants, events] = await Promise.all([db.getPlants(), db.getEvents()]);
+  return native.rearmReminders({ plants, events, settings, formatReminder, now: new Date() });
+}
+
 // Show a reminder notification. Chrome on Android FORBIDS the `new Notification()`
 // constructor (it throws "Illegal constructor") — notifications must be shown via
 // the service-worker registration. So prefer registration.showNotification()
@@ -2733,6 +2781,21 @@ async function boot() {
   await runMigrations();
   await reloadCustomSpecies();
   await render();
+
+  // Native app: the OS delivers pre-scheduled reminders even when closed, so we
+  // skip the web notifier and service worker entirely and instead (re-)arm the
+  // schedule on open, on resume, and hourly. This is the reliable, closed-app
+  // path the web version can't offer.
+  if (native.isNative) {
+    await native.initNative({
+      onResume: () => { rearmNative(); },
+      onOpen: (url) => { if (url) location.hash = String(url).replace(/^#/, ''); },
+    });
+    rearmNative();
+    setInterval(rearmNative, 60 * 60 * 1000);
+    return;
+  }
+
   // Check reminders shortly after open, then hourly while the app stays open.
   setTimeout(checkReminders, 4000);
   setInterval(checkReminders, 60 * 60 * 1000);
