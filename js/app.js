@@ -1484,14 +1484,15 @@ function photoField({ initial = null, big = true, placeholder = '📷 Take or ch
   const preview = el('div', { class: big ? 'photo-preview big' : 'photo-preview' },
     initial ? [el('img', { src: initial, alt: 'preview' })] : placeholder);
 
+  function setPhoto(dataUrl) {
+    clear(preview);
+    preview.append(el('img', { src: dataUrl, alt: 'preview' }));
+    if (onPicked) onPicked(dataUrl);
+  }
   async function handle(file) {
     if (!file) return;
-    try {
-      const dataUrl = await fileToResizedDataURL(file);
-      clear(preview);
-      preview.append(el('img', { src: dataUrl, alt: 'preview' }));
-      if (onPicked) onPicked(dataUrl);
-    } catch { toast('Could not load that image'); }
+    try { setPhoto(await fileToResizedDataURL(file)); }
+    catch { toast('Could not load that image'); }
   }
 
   // capture="environment" nudges phones to open the rear camera directly.
@@ -1500,10 +1501,19 @@ function photoField({ initial = null, big = true, placeholder = '📷 Take or ch
   const chooseInput = el('input', { type: 'file', accept: 'image/*', class: 'hidden-file' });
   chooseInput.addEventListener('change', () => handle(chooseInput.files[0]));
 
+  // In the native app the WebView's <input capture> opens the gallery, not the
+  // camera — so route "Take photo" through the native Camera plugin instead.
+  const takeAction = native.isNative
+    ? el('button', { type: 'button', class: 'photo-action', onClick: async () => {
+        const dataUrl = await native.takePhoto();
+        if (dataUrl) setPhoto(dataUrl);
+      } }, '📷 Take photo')
+    : el('label', { class: 'photo-action' }, ['📷 Take photo', takeInput]);
+
   const node = el('div', { class: 'photo-field' }, [
     el('label', { class: 'photo-preview-wrap' }, [preview, chooseInput]),
     el('div', { class: 'photo-actions' }, [
-      el('label', { class: 'photo-action' }, ['📷 Take photo', takeInput]),
+      takeAction,
       el('label', { class: 'photo-action' }, ['🖼️ Choose', el('input', { type: 'file', accept: 'image/*', class: 'hidden-file',
         onChange: (e) => handle(e.target.files[0]) })]),
     ]),
@@ -1570,16 +1580,30 @@ function growthChart(points) {
 // A one-tap camera button that saves a progress/health photo straight to the
 // plant's log (opens the camera directly on phones via `capture`).
 function quickPhotoButton(plant, { className = 'btn btn-secondary full', label = '📷 Add progress photo', stopProp = false } = {}) {
-  const input = el('input', { type: 'file', accept: 'image/*', capture: 'environment', class: 'hidden-file' });
-  input.addEventListener('change', async () => {
-    const file = input.files[0]; if (!file) return;
+  async function savePhoto(dataUrl) {
     try {
-      const dataUrl = await fileToResizedDataURL(file);
       await logCare(plant.id, 'photo', todayISO(), { photo: dataUrl });
       if (!plant.photo) { plant.photo = dataUrl; await db.putPlant(plant); }
       toast('Progress photo added');
       render();
     } catch { toast('Could not save that photo'); }
+  }
+
+  // Native: the WebView's <input capture> opens the gallery, so use the native
+  // Camera plugin to actually open the camera.
+  if (native.isNative) {
+    return el('button', { type: 'button', class: className, onClick: async (e) => {
+      if (stopProp) e.stopPropagation();
+      const dataUrl = await native.takePhoto();
+      if (dataUrl) savePhoto(dataUrl);
+    } }, label);
+  }
+
+  const input = el('input', { type: 'file', accept: 'image/*', capture: 'environment', class: 'hidden-file' });
+  input.addEventListener('change', async () => {
+    const file = input.files[0]; if (!file) return;
+    try { savePhoto(await fileToResizedDataURL(file)); }
+    catch { toast('Could not save that photo'); }
   });
   const attrs = { class: className };
   if (stopProp) attrs.onClick = (e) => e.stopPropagation();

@@ -172,6 +172,30 @@ export async function sendTestNotification({ lang = 'en' } = {}) {
   }
 }
 
+// Open the device camera via the native Camera plugin and return a resized JPEG
+// data URL (or null if cancelled/unavailable). Native only — on web the app uses
+// an <input capture> instead. This exists because inside the WebView that file
+// input opens the gallery rather than the camera, so we go straight to the
+// plugin, which launches the real camera. Our manifest doesn't declare CAMERA,
+// so the plugin uses the system camera intent with no runtime permission prompt.
+export async function takePhoto() {
+  const cam = Cap && Cap.Plugins ? Cap.Plugins.Camera : null;
+  if (!cam) return null;
+  try {
+    const photo = await cam.getPhoto({
+      source: 'CAMERA',
+      resultType: 'dataUrl',
+      quality: 82,
+      width: 1600,
+      correctOrientation: true,
+      saveToGallery: false,
+    });
+    return photo && photo.dataUrl ? photo.dataUrl : null;
+  } catch {
+    return null; // user cancelled, or no camera available
+  }
+}
+
 // Wire up resume + tap handling once, at boot. onResume lets app.js re-arm when
 // the user returns; onOpen focuses/deep-links when a notification is tapped.
 export async function initNative({ onResume, onOpen } = {}) {
