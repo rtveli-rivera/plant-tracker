@@ -466,6 +466,8 @@ const UI_NL = {
   "✅ Reminders enabled": "✅ Herinneringen ingeschakeld",
   "Enable reminders": "Herinneringen inschakelen",
   "Send a test reminder": "Stuur een testherinnering",
+  "📅 Add to calendar": "📅 Aan agenda toevoegen",
+  "Optional — a separate way to get reminders. Tap to download a calendar file for the next 60 days; nothing is added to your calendar until you open the file and confirm. Events are grouped one per day, tagged “Plant care”, and shown as free time so they won’t crowd your schedule. Re-export anytime to refresh.": "Optioneel — een aparte manier om herinneringen te krijgen. Tik om een agendabestand voor de komende 60 dagen te downloaden; er wordt niets aan je agenda toegevoegd totdat je het bestand opent en bevestigt. Afspraken staan gegroepeerd per dag, met het label “Plantenzorg”, en worden als vrije tijd getoond zodat ze je agenda niet volstoppen. Exporteer opnieuw om te verversen.",
   "Reminders": "Herinneringen",
   "You’ll always get a “what needs care today” summary when you open or return to the app. On an installed Android app, it can also remind you about once a day in the background (Chrome decides the exact timing). iPhone doesn’t allow background reminders without a server, so there it’s open/reopen only.": "Je krijgt altijd een overzicht van “wat vandaag zorg nodig heeft” wanneer je de app opent of terugkeert. Op een geïnstalleerde Android-app kan 'ie je ook ongeveer één keer per dag op de achtergrond herinneren (Chrome bepaalt het exacte tijdstip). iPhone staat geen achtergrondherinneringen zonder server toe, dus daar is het alleen bij openen/heropenen.",
   "AI health checks": "AI-gezondheidschecks",

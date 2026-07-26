@@ -12,6 +12,7 @@ import { welcomeMessage, careTips, scheduleWarnings, wateringAmount, pruningRepo
 import { buildHandoff, parseHandoffImport, SUMMARY_PROMPT, speciesPrompt, parseSpeciesImport } from './handoff.js';
 import { unitSwitchMessage } from './quips.js';
 import { analyzePlant, lookupSpeciesCare, hasApiKey, AI_MODELS, AIError } from './ai.js';
+import { buildPlantCareICS } from './calendar.js';
 
 const app = document.getElementById('app');
 
@@ -2332,11 +2333,15 @@ route(/^\/settings$/, async () => {
     }[s.code] || '';
     bgStatus.textContent = msg;
   }).catch(() => { bgStatus.textContent = ''; });
+  const calBtn = el('button', { class: 'btn btn-secondary', onClick: exportPlantCalendar }, '📅 Add to calendar');
+  const calHint = el('div', { class: 'hint' }, 'Optional — a separate way to get reminders. Tap to download a calendar file for the next 60 days; nothing is added to your calendar until you open the file and confirm. Events are grouped one per day, tagged “Plant care”, and shown as free time so they won’t crowd your schedule. Re-export anytime to refresh.');
   view.append(settingsGroup('Reminders', [
     notifBtn,
     testBtn,
     el('div', { class: 'hint' }, 'You’ll always get a “what needs care today” summary when you open or return to the app. On an installed Android app, it can also remind you about once a day in the background (Chrome decides the exact timing). iPhone doesn’t allow background reminders without a server, so there it’s open/reopen only.'),
     bgStatus,
+    calBtn,
+    calHint,
   ]));
 
   // AI health checks
@@ -2688,6 +2693,23 @@ async function checkReminders() {
   const msg = formatReminder(fresh, now);
   if (!msg) return;
   await showReminderNotification(msg);
+}
+
+// Optional, opt-in reminder path: only runs when the user taps "Add to calendar".
+// Exports the next ~2 months of plant care as an .ics file the user chooses to
+// open into their own calendar (Google/Apple/Outlook) — nothing is added to any
+// calendar until they open the downloaded file and their calendar confirms.
+async function exportPlantCalendar() {
+  const nl = getLang() === 'nl';
+  const settings = getSettings();
+  const [plants, events] = await Promise.all([db.getPlants(), db.getEvents()]);
+  if (!plants.length) { toast(nl ? 'Voeg eerst een plant toe' : 'Add a plant first'); return; }
+  const result = buildPlantCareICS({ plants, events, settings, formatReminder, now: new Date() });
+  if (!result) { toast(nl ? 'Nog niets in te plannen' : 'Nothing to schedule yet'); return; }
+  download('plant-care.ics', result.ics, 'text/calendar');
+  showTapPopup(nl
+    ? `${result.eventCount} herinneringen klaar. Open het gedownloade bestand “plant-care.ics” om ze aan je agenda toe te voegen.`
+    : `${result.eventCount} reminders ready. Open the downloaded “plant-care.ics” file to add them to your calendar.`);
 }
 
 // Show a reminder notification. Chrome on Android FORBIDS the `new Notification()`

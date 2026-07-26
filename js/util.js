@@ -125,8 +125,8 @@ export function dataUrlToPngBlob(dataUrl) {
   });
 }
 
-export function download(filename, text) {
-  const blob = new Blob([text], { type: 'application/json' });
+export function download(filename, text, mime = 'application/json') {
+  const blob = new Blob([text], { type: mime });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
