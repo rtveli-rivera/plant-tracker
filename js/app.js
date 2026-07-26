@@ -2785,11 +2785,40 @@ async function exportPlantCalendar() {
     prevDays: prev.days || [], seq, lang: getLang(),
   });
   if (!result) { toast(nl ? 'Nog niets in te plannen' : 'Nothing to schedule yet'); return; }
-  await db.putMeta('calendarExport', { seq, days: result.days });
-  download('plant-care.ics', result.ics, 'text/calendar');
-  showTapPopup(nl
-    ? `${result.eventCount} herinneringen klaar voor ~2 maanden. Open “plant-care.ics” om ze toe te voegen — je krijgt vanzelf een agendaherinnering om ze op tijd te vernieuwen.`
-    : `${result.eventCount} reminders ready for ~2 months. Open “plant-care.ics” to add them — you’ll get a calendar reminder to refresh them before they run out.`);
+
+  // How the events reach the calendar differs by platform: the native app opens
+  // the calendar app directly; the web downloads a file the user opens.
+  const how = native.isNative
+    ? (nl
+        ? 'Je agenda-app opent met de afspraken erin — tik daar op “Alles toevoegen” of “Opslaan” om ze te bewaren. Er wordt niets toegevoegd zonder jouw bevestiging.'
+        : 'Your calendar app will open showing the events — tap “Add all” / “Save” there to keep them. Nothing is added without your confirmation.')
+    : (nl
+        ? 'Er wordt een bestand “plant-care.ics” gedownload. Open het om de afspraken aan je agenda toe te voegen.'
+        : 'A “plant-care.ics” file downloads — open it to add the events to your calendar.');
+
+  // Confirm step with an explicit "Add to calendar" / "Later" choice, so nothing
+  // is exported until the user opts in.
+  const m = modal([
+    el('h3', { class: 'modal-title', 'data-noloc': '' }, nl ? 'Aan je agenda toevoegen?' : 'Add to your calendar?'),
+    el('p', { 'data-noloc': '' }, nl
+      ? `${result.eventCount} plantenzorg-herinneringen voor de komende ~2 maanden.`
+      : `${result.eventCount} plant-care reminders for the next ~2 months.`),
+    el('p', { class: 'hint', 'data-noloc': '' }, how),
+    el('div', { class: 'modal-actions' }, [
+      el('button', { class: 'btn btn-ghost', 'data-noloc': '', onClick: () => m.close() }, nl ? 'Later' : 'Later'),
+      el('button', { class: 'btn btn-primary', 'data-noloc': '', onClick: async () => {
+        m.close();
+        // Only record this export (for next time's cleanup) once the user commits.
+        await db.putMeta('calendarExport', { seq, days: result.days });
+        if (native.isNative) {
+          const opened = await native.openCalendarFile(result.ics);
+          if (!opened) download('plant-care.ics', result.ics, 'text/calendar'); // fallback
+        } else {
+          download('plant-care.ics', result.ics, 'text/calendar');
+        }
+      } }, nl ? '📅 Aan agenda toevoegen' : '📅 Add to calendar'),
+    ]),
+  ]);
 }
 
 // Show a reminder notification. Chrome on Android FORBIDS the `new Notification()`

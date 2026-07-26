@@ -172,6 +172,31 @@ export async function sendTestNotification({ lang = 'en' } = {}) {
   }
 }
 
+// Write the generated .ics to a temp file and open it, so the OS hands it to the
+// calendar app (which shows the events and lets the user confirm). This avoids
+// the "downloaded file vanished somewhere" problem of a plain web download inside
+// the WebView. Returns true if handed off, false if unavailable (caller falls
+// back to a normal download).
+export async function openCalendarFile(icsText, filename = 'plant-care.ics') {
+  const fs = Cap && Cap.Plugins ? Cap.Plugins.Filesystem : null;
+  const opener = Cap && Cap.Plugins ? Cap.Plugins.FileOpener : null;
+  if (!fs || !opener) return false;
+  try {
+    const written = await fs.writeFile({
+      path: filename,
+      data: icsText,
+      directory: 'CACHE',   // app-private cache — no storage permission needed
+      encoding: 'utf8',
+    });
+    // openWithDefault:true launches the calendar app directly (ACTION_VIEW for
+    // text/calendar) instead of showing a generic "Open with" chooser.
+    await opener.open({ filePath: written.uri, contentType: 'text/calendar', openWithDefault: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // Open the device camera via the native Camera plugin and return a resized JPEG
 // data URL (or null if cancelled/unavailable). Native only — on web the app uses
 // an <input capture> instead. This exists because inside the WebView that file
