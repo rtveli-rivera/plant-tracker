@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="leaf" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8fe0a8"/>
+      <stop offset="1" stop-color="#57c483"/>
+    </linearGradient>
+  </defs>
+  <!-- The app's leaves+pot art (original 512-space), scaled 1.4x and centred so
+       it sits inside the adaptive-icon safe zone with padding on all sides. -->
+  <g transform="translate(512 512) scale(1.4) translate(-256 -275)">
+    <g transform="translate(256 210)">
+      <path d="M0 40 C -18 -30 -70 -70 -120 -70 C -110 -6 -66 40 0 44 Z" fill="url(#leaf)"/>
+      <path d="M0 40 C 18 -30 70 -70 120 -70 C 110 -6 66 40 0 44 Z" fill="url(#leaf)"/>
+      <path d="M0 48 C -12 -46 -34 -104 0 -150 C 34 -104 12 -46 0 48 Z" fill="#c3f4d3"/>
+      <path d="M0 44 L0 92" stroke="#2f8f5b" stroke-width="10" stroke-linecap="round"/>
+    </g>
+    <g transform="translate(256 300)">
+      <path d="M-96 0 L96 0 L74 150 C 70 176 50 190 24 190 L-24 190 C -50 190 -70 176 -74 150 Z" fill="#e88a3c"/>
+      <path d="M-108 -14 L108 -14 L96 30 L-96 30 Z" fill="#f2a057"/>
+    </g>
+  </g>
+</svg>

@@ -1,0 +1,22 @@
+{
+  "name": "plant-tracker-native",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Capacitor Android wrapper for the Plant Tracker PWA. Dev-only; the web app itself remains a no-build static PWA.",
+  "scripts": {
+    "sync-web": "node scripts/sync-web.mjs",
+    "sync": "npm run sync-web && cap sync android",
+    "open:android": "cap open android",
+    "build:apk": "npm run sync-web && cap sync android && node scripts/build-apk.mjs"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.2.0",
+    "@capacitor/app": "^6.0.2",
+    "@capacitor/core": "^6.2.0",
+    "@capacitor/local-notifications": "^6.0.2"
+  },
+  "devDependencies": {
+    "@capacitor/assets": "^3.0.5",
+    "@capacitor/cli": "^6.2.0"
+  }
+}

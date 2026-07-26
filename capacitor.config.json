@@ -1,0 +1,9 @@
+{
+  "appId": "com.planttracker.app",
+  "appName": "Plant Tracker",
+  "webDir": "www",
+  "server": {
+    "url": "https://rtveli-rivera.github.io/plant-tracker/",
+    "cleartext": false
+  }
+}
