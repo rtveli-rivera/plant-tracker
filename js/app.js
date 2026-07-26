@@ -2776,12 +2776,20 @@ async function exportPlantCalendar() {
   const settings = getSettings();
   const [plants, events] = await Promise.all([db.getPlants(), db.getEvents()]);
   if (!plants.length) { toast(nl ? 'Voeg eerst een plant toe' : 'Add a plant first'); return; }
-  const result = buildPlantCareICS({ plants, events, settings, formatReminder, now: new Date() });
+  // Remember what we exported last time so this export can cancel days that have
+  // since dropped off the schedule, and bump the sequence so updates take effect.
+  const prev = (await db.getMeta('calendarExport')) || { seq: 0, days: [] };
+  const seq = (prev.seq || 0) + 1;
+  const result = buildPlantCareICS({
+    plants, events, settings, formatReminder, now: new Date(),
+    prevDays: prev.days || [], seq, lang: getLang(),
+  });
   if (!result) { toast(nl ? 'Nog niets in te plannen' : 'Nothing to schedule yet'); return; }
+  await db.putMeta('calendarExport', { seq, days: result.days });
   download('plant-care.ics', result.ics, 'text/calendar');
   showTapPopup(nl
-    ? `${result.eventCount} herinneringen klaar. Open het gedownloade bestand “plant-care.ics” om ze aan je agenda toe te voegen.`
-    : `${result.eventCount} reminders ready. Open the downloaded “plant-care.ics” file to add them to your calendar.`);
+    ? `${result.eventCount} herinneringen klaar voor ~2 maanden. Open “plant-care.ics” om ze toe te voegen — je krijgt vanzelf een agendaherinnering om ze op tijd te vernieuwen.`
+    : `${result.eventCount} reminders ready for ~2 months. Open “plant-care.ics” to add them — you’ll get a calendar reminder to refresh them before they run out.`);
 }
 
 // Show a reminder notification. Chrome on Android FORBIDS the `new Notification()`
