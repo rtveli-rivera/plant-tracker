@@ -647,6 +647,33 @@ async function saveLookedUpSpecies(c) {
 // PLANT DETAIL
 // =========================================================================
 
+// Shared, per-species cache for Wikipedia reference photos, so the guide page
+// and every logged plant of the same species fetch it exactly once between
+// them. Failures are remembered (triedAt) and only retried weekly.
+async function getRefPhotoCached(cacheKey, candidates) {
+  if (!cacheKey) return null;
+  const key = `refphoto:${String(cacheKey).toLowerCase()}`;
+  const hit = await db.getMeta(key);
+  if (hit && hit.img) return hit.img;
+  if (hit && hit.triedAt && Date.now() - new Date(hit.triedAt).getTime() < 7 * MS_PER_DAY) return null;
+  if (navigator.onLine === false) return null;
+  const img = await fetchSpeciesImage(candidates);
+  await db.putMeta(key, { img: img || null, triedAt: new Date().toISOString() });
+  return img;
+}
+
+// The reference-photo card used by both the guide and the plant page.
+function refPhotoCard(img) {
+  return el('div', { class: 'ref-card' }, [
+    el('img', { src: img.dataUrl, alt: img.pageTitle || 'species reference', onClick: () => openImage(img.dataUrl, img.pageTitle) }),
+    el('div', { class: 'ref-cap' }, [
+      el('span', {}, 'Species reference'),
+      el('span', {}, ' · '),
+      el('a', { href: img.pageUrl, target: '_blank', rel: 'noopener', 'data-noloc': '1' }, 'Wikipedia ↗'),
+    ]),
+  ]);
+}
+
 route(/^\/plant\/(.+)$/, async (id) => {
   const settings = getSettings();
   const now = new Date();
@@ -762,16 +789,7 @@ route(/^\/plant\/(.+)$/, async (id) => {
   if (plant.refPhoto || bestOwn) {
     view.append(el('h2', { class: 'section-title' }, 'What healthy looks like'));
     const refGrid = el('div', { class: 'ref-grid' });
-    if (plant.refPhoto) {
-      refGrid.append(el('div', { class: 'ref-card' }, [
-        el('img', { src: plant.refPhoto.dataUrl, alt: plant.refPhoto.pageTitle || 'species reference', onClick: () => openImage(plant.refPhoto.dataUrl, plant.refPhoto.pageTitle) }),
-        el('div', { class: 'ref-cap' }, [
-          el('span', {}, 'Species reference'),
-          el('span', {}, ' · '),
-          el('a', { href: plant.refPhoto.pageUrl, target: '_blank', rel: 'noopener', 'data-noloc': '1' }, 'Wikipedia ↗'),
-        ]),
-      ]));
-    }
+    if (plant.refPhoto) refGrid.append(refPhotoCard(plant.refPhoto));
     if (bestOwn) {
       refGrid.append(el('div', { class: 'ref-card' }, [
         el('img', { src: bestOwn.photo, alt: 'your plant at its best', onClick: () => openImage(bestOwn.photo, fmtDate(bestOwn.date)) }),
@@ -792,7 +810,8 @@ route(/^\/plant\/(.+)$/, async (id) => {
       (async () => {
         plant.refPhotoTried = new Date().toISOString();
         const sp = plant.speciesId ? getSpecies(plant.speciesId) : null;
-        const img = await fetchSpeciesImage([
+        const cacheKey = (sp && sp.latin) || plant.latin || (sp && sp.name) || plant.name;
+        const img = await getRefPhotoCached(cacheKey, [
           (sp && sp.latin) || plant.latin,
           plant.latin,
           sp && sp.name,
@@ -2178,6 +2197,14 @@ route(/^\/guide\/(.+)$/, (id) => {
       el('span', { class: `diff diff-${s.difficulty}` }, cap(s.difficulty) + ' care'),
     ]),
   ]));
+  // Species reference photo — from the shared cache, fetched from Wikipedia the
+  // first time this species page (or a plant of this species) is opened online.
+  const refSlot = el('div', { class: 'ref-grid guide-ref' });
+  view.append(refSlot);
+  (async () => {
+    const img = await getRefPhotoCached(s.latin || s.name, [s.latin, s.name]);
+    if (img && refSlot.isConnected) { refSlot.append(refPhotoCard(img)); localizeDOM(refSlot); }
+  })();
   view.append(el('div', { class: 'care-grid' }, [
     careItem('☀️', 'Light', LIGHT[s.light] || s.light),
     careItem('💧', 'Water', `Every ${s.water} days (growing season)`),

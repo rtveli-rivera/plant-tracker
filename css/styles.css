@@ -380,6 +380,8 @@ label.btn.full { display: block; width: 100%; }
 .ref-card img { width: 100%; aspect-ratio: 1.25 / 1; object-fit: cover; display: block; cursor: pointer; }
 .ref-cap { font-size: 12px; color: var(--text-dim); padding: 8px 10px; }
 .ref-cap a { color: var(--blue); text-decoration: none; }
+.guide-ref { margin-top: 12px; }
+.guide-ref:empty { display: none; }
 .symptom-card { display: flex; flex-direction: column; align-items: center; gap: 8px; background: var(--surface); border: none; border-radius: var(--radius); padding: 20px 10px; box-shadow: var(--shadow); color: var(--text); }
 .symptom-card:active { transform: scale(0.97); }
 .symptom-emoji { font-size: 30px; }
