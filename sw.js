@@ -22,6 +22,7 @@ const ASSETS = [
   './js/quips.js',
   './js/refphoto.js',
   './js/symptomart.js',
+  './js/refmanifest.js',
   './js/ai.js',
   './js/handoff.js',
   './js/i18n.js',
@@ -31,12 +32,41 @@ const ASSETS = [
   './icons/icon-maskable-512.png',
 ];
 
+// Bundled reference photos live in their own STABLE cache: unlike the app shell
+// they never change between releases, so they're fetched once per device — not
+// re-downloaded (~1.4 MB) on every version bump. The activate cleanup spares
+// this cache, and install only fills in whatever is missing.
+const IMG_CACHE = 'plant-tracker-img-v1';
+const IMG_ASSETS = [
+  'african-violet.jpg', 'aloe-vera.jpg', 'anthurium.jpg', 'begonia.jpg', 'cactus.jpg',
+  'calathea.jpg', 'chinese-evergreen.jpg', 'dracaena.jpg', 'english-ivy.jpg',
+  'fern-boston.png', 'fiddle-leaf-fig.jpg', 'herb-basil.jpg', 'herb-generic.jpg',
+  'jade-plant.jpg', 'monstera.jpg', 'orchid-phalaenopsis.jpg', 'peace-lily.jpg',
+  'philodendron.jpg', 'pothos.jpg', 'rubber-plant.jpg', 'snake-plant.jpg',
+  'spider-plant.jpg', 'string-of-pearls.jpg', 'succulent-generic.jpg',
+  'tropical-generic.jpg', 'zz-plant.jpg',
+].map((f) => './img/species/' + f).concat([
+  './img/symptoms/yellow-leaves.jpg', './img/symptoms/pests.jpg',
+]);
+
+async function fillImageCache() {
+  const cache = await caches.open(IMG_CACHE);
+  for (const url of IMG_ASSETS) {
+    if (await cache.match(url)) continue; // already have it — never refetch
+    try {
+      const res = await fetch(url);
+      if (res.ok) await cache.put(url, res);
+    } catch { /* offline install — the fetch handler fills it in later */ }
+  }
+}
+
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE)
       // Fetch with cache:'reload' so a version bump always pulls fresh files,
       // never a stale copy from the browser's HTTP cache.
-      .then((cache) => cache.addAll(ASSETS.map((u) => new Request(u, { cache: 'reload' })))),
+      .then((cache) => cache.addAll(ASSETS.map((u) => new Request(u, { cache: 'reload' }))))
+      .then(fillImageCache),
     // NOTE: no skipWaiting() here — the new worker waits so the app can prompt
     // the user to update, rather than swapping code out from under them.
   );
@@ -62,7 +92,8 @@ self.addEventListener('message', (event) => {
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) =>
-      Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))),
+      // Spare IMG_CACHE: the bundled photos are version-independent.
+      Promise.all(keys.filter((k) => k !== CACHE && k !== IMG_CACHE).map((k) => caches.delete(k))),
     ).then(() => self.clients.claim()),
   );
 });

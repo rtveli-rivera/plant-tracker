@@ -13,6 +13,7 @@ import { buildHandoff, parseHandoffImport, summaryPrompt, speciesPrompt, parseSp
 import { unitSwitchMessage } from './quips.js';
 import { fetchSpeciesImage } from './refphoto.js';
 import { symptomArt } from './symptomart.js';
+import { SPECIES_PHOTOS, SYMPTOM_PHOTOS } from './refmanifest.js';
 import { analyzePlant, lookupSpeciesCare, hasApiKey, AI_MODELS, AIError } from './ai.js';
 import * as native from './native.js';
 import { buildPlantCareICS } from './calendar.js';
@@ -662,14 +663,25 @@ async function getRefPhotoCached(cacheKey, candidates) {
   return img;
 }
 
-// The reference-photo card used by both the guide and the plant page.
-function refPhotoCard(img) {
+// The reference-photo card used by the guide, the plant page and the
+// troubleshooter. Handles both bundled manifest entries ({file, title, artist,
+// license…}) and runtime-fetched ones ({dataUrl, pageTitle…}), and renders the
+// credit line the Commons licenses require.
+function refPhotoCard(img, label = 'Species reference') {
+  const src = img.file || img.dataUrl;
+  const title = img.title || img.pageTitle || '';
+  const credit = [img.artist, img.license].filter(Boolean).join(' · ');
   return el('div', { class: 'ref-card' }, [
-    el('img', { src: img.dataUrl, alt: img.pageTitle || 'species reference', onClick: () => openImage(img.dataUrl, img.pageTitle) }),
+    el('img', { src, alt: title || 'reference photo', loading: 'lazy', onClick: () => openImage(src, title) }),
     el('div', { class: 'ref-cap' }, [
-      el('span', {}, 'Species reference'),
+      el('span', {}, label),
       el('span', {}, ' · '),
       el('a', { href: img.pageUrl, target: '_blank', rel: 'noopener', 'data-noloc': '1' }, 'Wikipedia ↗'),
+      credit ? el('div', { class: 'ref-credit', 'data-noloc': '1' }, [
+        img.licenseUrl
+          ? el('a', { href: img.licenseUrl, target: '_blank', rel: 'noopener' }, credit)
+          : credit,
+      ]) : null,
     ]),
   ]);
 }
@@ -786,10 +798,13 @@ route(/^\/plant\/(.+)$/, async (id) => {
   // What healthy looks like — a species reference photo (fetched once from
   // Wikipedia, stored on-device) next to the owner's own best "good" photo.
   const bestOwn = events.find((e) => e.type === 'health' && e.photo && e.health === 'good');
-  if (plant.refPhoto || bestOwn) {
+  // Bundled photo first (built-in species, instant + offline); the stored
+  // runtime-fetched one covers custom species.
+  const refImg = (plant.speciesId && SPECIES_PHOTOS[plant.speciesId]) || plant.refPhoto;
+  if (refImg || bestOwn) {
     view.append(el('h2', { class: 'section-title' }, 'What healthy looks like'));
     const refGrid = el('div', { class: 'ref-grid' });
-    if (plant.refPhoto) refGrid.append(refPhotoCard(plant.refPhoto));
+    if (refImg) refGrid.append(refPhotoCard(refImg));
     if (bestOwn) {
       refGrid.append(el('div', { class: 'ref-card' }, [
         el('img', { src: bestOwn.photo, alt: 'your plant at its best', onClick: () => openImage(bestOwn.photo, fmtDate(bestOwn.date)) }),
@@ -804,7 +819,7 @@ route(/^\/plant\/(.+)$/, async (id) => {
   // Fetch the reference once, in the background, the first time this page is
   // open while online. Throttled via refPhotoTried so a species Wikipedia
   // doesn't know isn't retried on every visit.
-  if (!plant.refPhoto && navigator.onLine !== false) {
+  if (!refImg && navigator.onLine !== false) {
     const tried = plant.refPhotoTried ? Date.now() - new Date(plant.refPhotoTried).getTime() : Infinity;
     if (tried > 7 * MS_PER_DAY) {
       (async () => {
@@ -2197,14 +2212,19 @@ route(/^\/guide\/(.+)$/, (id) => {
       el('span', { class: `diff diff-${s.difficulty}` }, cap(s.difficulty) + ' care'),
     ]),
   ]));
-  // Species reference photo — from the shared cache, fetched from Wikipedia the
-  // first time this species page (or a plant of this species) is opened online.
+  // Species reference photo — bundled for built-in species (instant, offline);
+  // custom species fall back to the shared runtime Wikipedia cache.
   const refSlot = el('div', { class: 'ref-grid guide-ref' });
   view.append(refSlot);
-  (async () => {
-    const img = await getRefPhotoCached(s.latin || s.name, [s.latin, s.name]);
-    if (img && refSlot.isConnected) { refSlot.append(refPhotoCard(img)); localizeDOM(refSlot); }
-  })();
+  const bundledRef = SPECIES_PHOTOS[s.id];
+  if (bundledRef) {
+    refSlot.append(refPhotoCard(bundledRef));
+  } else {
+    (async () => {
+      const img = await getRefPhotoCached(s.latin || s.name, [s.latin, s.name]);
+      if (img && refSlot.isConnected) { refSlot.append(refPhotoCard(img)); localizeDOM(refSlot); }
+    })();
+  }
   view.append(el('div', { class: 'care-grid' }, [
     careItem('☀️', 'Light', LIGHT[s.light] || s.light),
     careItem('💧', 'Water', `Every ${s.water} days (growing season)`),
@@ -2321,6 +2341,17 @@ function renderCauses(view, sym, ctx) {
       el('div', { html: art.svg }),
       el('div', { class: 'symptom-art-caption', 'data-noloc': '1' }, art.caption),
     ]));
+  }
+  // A real, vetted example photo where a genuinely good one exists (only some
+  // symptoms photograph meaningfully — the rest rely on the diagram).
+  const symPhoto = SYMPTOM_PHOTOS[sym.id];
+  if (symPhoto) {
+    const card = refPhotoCard(symPhoto, 'Example');
+    card.querySelector('.ref-cap').prepend(
+      el('div', { class: 'symptom-art-caption', 'data-noloc': '1' }, symPhoto.caption[getLang() === 'nl' ? 'nl' : 'en']),
+    );
+    card.classList.add('symptom-photo');
+    view.append(card);
   }
   view.append(el('div', { class: 'diagnose-head' }, [
     el('span', { class: 'diagnose-emoji' }, sym.emoji),
