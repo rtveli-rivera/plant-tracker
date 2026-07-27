@@ -9,7 +9,7 @@ import { seasonForDate, SEASON_META, seasonalExplanation } from './season.js';
 import { waterStatus, feedStatus, overallStatus, dueTasks, effectiveWaterInterval, photoStatus, feedCategoryFactor, plantCategory, lastEvent, MS_PER_DAY } from './schedule.js';
 import { getSettings, saveSettings } from './settings.js';
 import { welcomeMessage, careTips, scheduleWarnings, wateringAmount, pruningRepotTips, seasonalNudges } from './coach.js';
-import { buildHandoff, parseHandoffImport, SUMMARY_PROMPT, speciesPrompt, parseSpeciesImport } from './handoff.js';
+import { buildHandoff, parseHandoffImport, summaryPrompt, speciesPrompt, parseSpeciesImport } from './handoff.js';
 import { unitSwitchMessage } from './quips.js';
 import { analyzePlant, lookupSpeciesCare, hasApiKey, AI_MODELS, AIError } from './ai.js';
 import * as native from './native.js';
@@ -1166,6 +1166,57 @@ function openMoreDialog(plant, presetType) {
 
 const CONDITION_LEVEL = { good: 'good', ok: 'watch', poor: 'poor' };
 
+// The plant's "chart" for the AI health check: everything the app already knows
+// that changes a diagnosis — most importantly when it was actually last watered
+// (drooping right after a watering ≠ drooping at day 12) and the pot/drainage.
+// Always in English; the AI localizes its *reply* per the system prompt.
+function careRecordLines(plant, events, settings, now = new Date()) {
+  const lines = [];
+  const ago = (d) => {
+    const n = Math.max(0, Math.round((now - new Date(d)) / MS_PER_DAY));
+    return n === 0 ? 'today' : n === 1 ? 'yesterday' : `${n} days ago`;
+  };
+
+  const lastW = lastEvent(events, plant.id, 'water');
+  lines.push(lastW ? `Last watered: ${ago(lastW.date)}` : 'Last watered: never logged');
+  if (plant.profile.fertilize) {
+    const lastF = lastEvent(events, plant.id, 'fertilize');
+    lines.push(lastF ? `Last fed: ${ago(lastF.date)}` : 'Last fed: never logged');
+  }
+  const eff = effectiveWaterInterval(plant.profile, now, settings.hemisphere, plant.conditions);
+  lines.push(`Effective watering interval right now (baseline adjusted for season and pot): every ${eff} days`);
+
+  const cond = conditionsSummary(plant.conditions);
+  if (cond) lines.push(`Pot & spot: ${cond}`);
+  if (plant.location) lines.push(`Location in home: ${plant.location}`);
+
+  const lastR = lastEvent(events, plant.id, 'repot');
+  if (lastR) lines.push(`Last repotted: ${ago(lastR.date)}`);
+  const lastP = lastEvent(events, plant.id, 'prune');
+  if (lastP) lines.push(`Last pruned: ${ago(lastP.date)}`);
+
+  // Up to 3 most recent health notes (getEvents returns newest first).
+  const healths = events.filter((e) => e.type === 'health').slice(0, 3);
+  for (const h of healths) {
+    const parts = [h.health ? `condition ${h.health}` : null, h.notes || null].filter(Boolean).join(' — ');
+    if (parts) lines.push(`Health note (${ago(h.date)}): ${parts}`);
+  }
+
+  // Growth trend from logged measurements (stored canonically in cm).
+  const growth = events.filter((e) => e.type === 'growth' && Number.isFinite(e.height));
+  if (growth.length) {
+    const latest = growth[0];
+    let g = `Latest height: ${Math.round(latest.height)} cm`;
+    const oldest = growth[growth.length - 1];
+    if (growth.length > 1 && Math.round(oldest.height) !== Math.round(latest.height)) {
+      const diff = Math.round(latest.height - oldest.height);
+      g += ` (${diff > 0 ? '+' : ''}${diff} cm since ${ago(oldest.date)})`;
+    }
+    lines.push(g);
+  }
+  return lines;
+}
+
 async function openAIDialog(plant) {
   const settings = getSettings();
 
@@ -1183,13 +1234,14 @@ async function openAIDialog(plant) {
     return;
   }
 
+  // Events power both the default photo and the care records sent to the AI.
+  let events = [];
+  try { events = await db.getEvents(plant.id); } catch { /* ignore */ }
+
   // Default to the most recent photo we have for this plant.
   let defaultPhoto = plant.photo || null;
-  try {
-    const events = await db.getEvents(plant.id);
-    const lastPhoto = events.find((e) => e.photo);
-    if (lastPhoto) defaultPhoto = lastPhoto.photo;
-  } catch { /* ignore */ }
+  const lastPhoto = events.find((e) => e.photo);
+  if (lastPhoto) defaultPhoto = lastPhoto.photo;
 
   const photoState = { dataUrl: defaultPhoto };
   const result = el('div', { class: 'ai-result' });
@@ -1221,6 +1273,7 @@ async function openAIDialog(plant) {
         season,
         waterBase: plant.profile.water,
         feedBase: plant.profile.fertilize,
+        record: careRecordLines(plant, events, settings),
         background: bgInput.value.trim(),
       });
       renderAIResult(result, analysis, plant, photoState.dataUrl, () => m.close());
@@ -1284,14 +1337,18 @@ function renderAIResult(container, a, plant, photo, closeDialog) {
   container.append(bubble);
 
   // One-tap apply: turn the AI's recommendation into concrete schedule changes.
+  // Bounds mirror the edit form (water 1–120, feed 0–180) so a hallucinated
+  // extreme value can never reach the schedule, even through the preview.
   const adj = a.adjustments || {};
   const changes = [];
   if (adj.recommend_watering_change && Number.isInteger(adj.water_interval_days) &&
-      adj.water_interval_days > 0 && adj.water_interval_days !== plant.profile.water) {
+      adj.water_interval_days >= 1 && adj.water_interval_days <= 120 &&
+      adj.water_interval_days !== plant.profile.water) {
     changes.push({ kind: 'water', from: plant.profile.water, to: adj.water_interval_days });
   }
   if (adj.recommend_feeding_change && Number.isInteger(adj.fertilize_interval_days) &&
-      adj.fertilize_interval_days >= 0 && adj.fertilize_interval_days !== plant.profile.fertilize) {
+      adj.fertilize_interval_days >= 0 && adj.fertilize_interval_days <= 180 &&
+      adj.fertilize_interval_days !== plant.profile.fertilize) {
     changes.push({ kind: 'feed', from: plant.profile.fertilize, to: adj.fertilize_interval_days });
   }
   if (adj.water_now) changes.push({ kind: 'water_now' });
@@ -1387,7 +1444,7 @@ async function openHandoffDialog(plant, analysis = null) {
   }
 
   const summaryPromptBtn = el('button', { class: 'btn btn-secondary full', onClick: async () => {
-    try { await navigator.clipboard.writeText(SUMMARY_PROMPT); toast('Copied — send this to your AI to get the summary'); }
+    try { await navigator.clipboard.writeText(summaryPrompt(getLang())); toast('Copied — send this to your AI to get the summary'); }
     catch { toast('Copy failed — long-press to copy the prompt below'); }
   } }, '📋 Copy summary prompt');
 
@@ -1437,10 +1494,12 @@ function renderImportPreview(container, parsed, plant, closeDialog) {
 
   const cc = parsed.care_changes;
   const changes = [];
-  if (Number.isInteger(cc.water_interval_days) && cc.water_interval_days > 0 && cc.water_interval_days !== plant.profile.water) {
+  // Same bounds as the edit form (water 1–120, feed 0–180) — pasted AI output
+  // is even less trustworthy than our own API path.
+  if (Number.isInteger(cc.water_interval_days) && cc.water_interval_days >= 1 && cc.water_interval_days <= 120 && cc.water_interval_days !== plant.profile.water) {
     changes.push({ kind: 'water', to: cc.water_interval_days, from: plant.profile.water });
   }
-  if (Number.isInteger(cc.fertilize_interval_days) && cc.fertilize_interval_days >= 0 && cc.fertilize_interval_days !== plant.profile.fertilize) {
+  if (Number.isInteger(cc.fertilize_interval_days) && cc.fertilize_interval_days >= 0 && cc.fertilize_interval_days <= 180 && cc.fertilize_interval_days !== plant.profile.fertilize) {
     changes.push({ kind: 'feed', to: cc.fertilize_interval_days, from: plant.profile.fertilize });
   }
   if (cc.light && cc.light !== plant.profile.light) {

@@ -8,6 +8,7 @@
 // locally). Everything else in the app stays on-device.
 
 import { getSettings } from './settings.js';
+import { getLang, getUnits } from './i18n.js';
 
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 
@@ -76,6 +77,8 @@ Voice and style:
 - Talk like a real person. Second person ("your plant", "you'll want to..."). Warm and reassuring, but honest if something looks off.
 - Be specific about what you actually see in the photo — leaf color, drooping, spots, new growth, soil, the pot.
 - If the owner gives background (recent repotting, a move, a change in light or watering, symptoms and when they started), treat it as key evidence — it can change your diagnosis. Acknowledge it and connect your assessment to it.
+- You may also get the owner's care records from the app: when it was last watered and fed, the pot size/material and drainage, the light at its spot, recent health notes, and recent repotting/pruning. Treat these like a patient's chart and weigh them together with the photo — the same symptom flips diagnosis on this evidence. Drooping two days after a thorough watering points to overwatering or poor drainage, not thirst; drooping at day 12 of a 7-day interval points to underwatering. A pot with no drainage makes root rot the prime suspect.
+- If the photo and records are genuinely ambiguous, say so and make your first next_step the check that disambiguates (e.g. "feel 3 cm into the soil: wet = hold off, dry = water"). If the photo is too far away or blurry to judge leaves or pests, say that in the assessment and ask for a closer shot in watch_for.
 - If it's a new/healthy plant, celebrate it ("great pick", "looking really healthy").
 - Keep it concise. No markdown, no headings, no emoji in your text fields.
 
@@ -89,11 +92,25 @@ Fill every field of the JSON:
 - watch_for: early-warning signs to keep an eye on (empty array if none).
 - species_guess: your best guess at the species/common name (empty string if unsure).
 - adjustments: concrete tweaks the app can apply in one tap. You'll be told the current growing-season watering and feeding intervals.
-  - recommend_watering_change: true ONLY if the photo clearly suggests the current watering interval is wrong (e.g. yellow soft leaves + wet soil = water less often; crispy/drooping + dry = more often). Be conservative — most healthy plants need no change.
-  - water_interval_days: the growing-season baseline you'd set (echo the current value when recommend_watering_change is false).
-  - recommend_feeding_change / fertilize_interval_days: same idea for feeding (echo current when no change).
-  - water_now: true only if it looks thirsty right now and should be watered today.
+  - recommend_watering_change: true ONLY if the evidence (photo + records) clearly suggests the current watering interval is wrong (e.g. yellow soft leaves + wet soil = water less often; crispy/drooping + dry = more often). Be conservative — most healthy plants need no change.
+  - water_interval_days: the growing-season baseline you'd set (echo the current value when recommend_watering_change is false). Must be 1–60 days, and stay within half-to-double the current interval unless the plant is clearly in crisis.
+  - recommend_feeding_change / fertilize_interval_days: same idea for feeding (echo current when no change). Must be 7–120 days, or 0 to stop scheduled feeding.
+  - water_now: true only if it looks thirsty right now and should be watered today — never when the records show it was watered in the last couple of days.
   - summary: one short sentence describing the tweak, or "No schedule changes needed." if nothing changes.`;
+
+// Language + units instructions, appended to the health-check system prompt at
+// call time (settings can change between calls). Species data is NOT localized —
+// those fields are canonical English that the app translates at display time.
+function localeLines() {
+  const lines = [];
+  if (getLang() === 'nl') {
+    lines.push('Write every text-field VALUE (headline, assessment, observations, next_steps, watch_for, species_guess, adjustments.summary) in natural, warm, informal Dutch (je/jij) — written natively, not translated word-for-word. Keep the JSON keys and the condition enum ("good"/"ok"/"poor") in English.');
+  }
+  lines.push(getUnits() === 'imperial'
+    ? 'When you mention sizes, depths or temperatures, use imperial units (inches, °F).'
+    : 'When you mention sizes, depths or temperatures, use metric units (cm, °C).');
+  return lines.join('\n');
+}
 
 function splitDataUrl(dataUrl) {
   const m = /^data:(image\/[a-zA-Z+]+);base64,(.*)$/.exec(dataUrl || '');
@@ -113,6 +130,9 @@ async function callAnthropic({ system, content, schema, maxTokens = 1024 }) {
     model,
     max_tokens: maxTokens,
     system,
+    // Low temperature: this is a diagnostic task — the same photo + records
+    // should produce the same read and the same schedule advice run-to-run.
+    temperature: 0.3,
     messages: [{ role: 'user', content }],
     output_config: { format: { type: 'json_schema', schema } },
   };
@@ -163,7 +183,9 @@ async function callAnthropic({ system, content, schema, maxTokens = 1024 }) {
   }
 }
 
-// Analyze a plant photo. `context` may include plantName, speciesName, season.
+// Analyze a plant photo. `context` may include plantName, speciesName, season,
+// waterBase/feedBase, background (owner's free text) and record (an array of
+// care-record lines from the app: last watered/fed, pot & drainage, health notes…).
 export async function analyzePlant(dataUrl, context = {}) {
   const { mediaType, base64 } = splitDataUrl(dataUrl);
 
@@ -177,13 +199,16 @@ export async function analyzePlant(dataUrl, context = {}) {
   if (Number.isFinite(context.feedBase) && context.feedBase > 0) {
     bits.push(`I feed it every ${context.feedBase} days.`);
   }
+  const record = (Array.isArray(context.record) && context.record.length)
+    ? `\n\nMy care records from the app:\n${context.record.map((r) => `- ${r}`).join('\n')}`
+    : '';
   const bg = (context.background || '').trim();
   const bgLine = bg ? `\n\nImportant background from me (weigh this heavily — it may change your read): ${bg}` : '';
   const userText =
-    `Here's a photo of my houseplant. ${bits.join(' ')} How does it look, and what should I do to keep it healthy?${bgLine}`.trim();
+    `Here's a photo of my houseplant. ${bits.join(' ')}${record}${bgLine}\n\nHow does it look, and what should I do to keep it healthy?`.trim();
 
   return callAnthropic({
-    system: SYSTEM_PROMPT,
+    system: `${SYSTEM_PROMPT}\n\n${localeLines()}`,
     content: [
       { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
       { type: 'text', text: userText },
@@ -239,7 +264,9 @@ Field meanings:
 - difficulty: easy, moderate, or hard.
 - soil: short recommended soil/mix.
 - tips: 1–2 sentences with the single most important care tip and the most common mistake.
-- common_name / latin_name: fill both if known.`;
+- common_name / latin_name: fill both if known.
+
+Write ALL string field values in English regardless of the user's language — the app stores them canonically and translates for display.`;
 
 // Fetch baseline care data for a species by name (photo optional to help ID).
 export async function lookupSpeciesCare(name, photoDataUrl = null) {

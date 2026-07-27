@@ -35,14 +35,28 @@ const IMPORT_TEMPLATE = [
   '```',
 ].join('\n');
 
+// The interval fields are growing-season baselines — the app applies its own
+// seasonal adjustment. Without this note, an AI consulted in winter returns the
+// winter rhythm, which the app would then store (and re-adjust) as the baseline.
+const BASELINE_NOTE = 'Important: water_interval_days and fertilize_interval_days are GROWING-SEASON baselines (typical days between waterings/feedings in spring–summer). My app applies winter/seasonal adjustment itself, so never return a winter-adjusted number — convert back to the growing-season rhythm if we discussed the current season.';
+
+// Dutch users chat with their AI in Dutch; the imported text fields land in
+// their (Dutch) health log. Keys and enums must stay English for the parser.
+const DUTCH_VALUES_NOTE = 'Write the JSON string values (summary, assessment, next_steps, log_note, reason) in Dutch. Keep the JSON keys and the enum values (condition: good/ok/poor; light: low/medium/bright/full) in English exactly as shown.';
+
 // A closing prompt the user pastes into their AI to get a clean, importable
 // summary. Built from the same template so the two can never drift apart.
-export const SUMMARY_PROMPT = [
-  "We're done — please summarise everything we concluded about my plant as a single block I can import into my plant-care app.",
-  'Output ONLY the fenced code block below, with nothing before or after it. It must be valid JSON: straight quotes, no trailing commas, no comments. Use null for anything we didn\'t determine.',
-  '',
-  IMPORT_TEMPLATE,
-].join('\n');
+// A function (not a const) so it follows the current language setting.
+export function summaryPrompt(lang) {
+  return [
+    "We're done — please summarise everything we concluded about my plant as a single block I can import into my plant-care app.",
+    'Output ONLY the fenced code block below, with nothing before or after it. It must be valid JSON: straight quotes, no trailing commas, no comments. Use null for anything we didn\'t determine.',
+    BASELINE_NOTE,
+    ...(lang === 'nl' ? [DUTCH_VALUES_NOTE] : []),
+    '',
+    IMPORT_TEMPLATE,
+  ].join('\n');
+}
 
 export function buildHandoff({ plant, events, settings, analysis }) {
   const now = new Date();
@@ -65,7 +79,7 @@ export function buildHandoff({ plant, events, settings, analysis }) {
   L.push(`- Hemisphere: ${settings.hemisphere === 'N' ? 'Northern' : 'Southern'}; current season: ${SEASON_META[season].label}`, '');
 
   L.push('## Current care routine');
-  L.push(`- Watering: about every ${p.water} days (baseline); ~${eff} days right now in ${SEASON_META[season].label.toLowerCase()}`);
+  L.push(`- Watering: about every ${p.water} days (growing-season baseline); ~${eff} days right now in ${SEASON_META[season].label.toLowerCase()}`);
   L.push(`- Feeding: ${p.fertilize ? `every ${p.fertilize} days${feeding ? '' : ' (paused for the season)'}` : 'rarely'}`);
   L.push(`- Light: ${LIGHT[p.light] || p.light}`);
   L.push(`- Humidity preference: ${p.humidity}`);
@@ -73,6 +87,8 @@ export function buildHandoff({ plant, events, settings, analysis }) {
   L.push(`- Soil: ${p.soil}`);
   L.push(`- Toxicity: ${p.toxic}`);
   if (p.tips) L.push(`- Key care tip: ${p.tips}`);
+  const cond = conditionsLine(plant.conditions);
+  if (cond) L.push(`- Its actual pot & spot: ${cond}`);
   L.push('');
 
   const recent = events.slice(0, 15);
@@ -100,11 +116,35 @@ export function buildHandoff({ plant, events, settings, analysis }) {
 
   L.push('---', '');
   L.push('## How to help me');
-  L.push('Please act as an expert houseplant advisor. Ask me any clarifying questions and help me diagnose and fix any issues. I can attach a photo of the plant in this chat if that would help.', '');
+  L.push('Please act as an expert houseplant advisor. Ask me any clarifying questions and help me diagnose and fix any issues. I can attach a photo of the plant in this chat if that would help.');
+  if (settings.lang === 'nl') L.push('Please conduct the conversation with me in Dutch.');
+  if (settings.units === 'imperial') L.push('Use imperial units (°F, inches) when talking to me.');
+  L.push('');
   L.push('IMPORTANT — so I can import your findings back into my app, END your reply with a single fenced code block in EXACTLY this format. Keep the ```plant-tracker fences, use only these fields, and use null when something is unknown. It must be valid JSON: straight quotes only, no trailing commas, no comments. Always include the block (even if nothing changes):', '');
+  L.push(BASELINE_NOTE);
+  if (settings.lang === 'nl') L.push(DUTCH_VALUES_NOTE);
+  L.push('');
   L.push(IMPORT_TEMPLATE);
 
   return L.join('\n');
+}
+
+// Compact English description of the plant's actual pot & spot (mirrors the
+// app's conditionsSummary, kept here so the brief has no app.js dependency).
+const COND_LABEL = {
+  potSize: { small: 'small pot', medium: 'medium pot', large: 'large pot' },
+  potMaterial: { terracotta: 'terracotta', plastic: 'plastic', ceramic: 'glazed ceramic', metal: 'metal' },
+  drainage: { yes: 'has drainage holes', no: 'NO drainage holes' },
+  lightSpot: { low: 'low-light spot', medium: 'medium-light spot', bright: 'bright spot' },
+};
+
+function conditionsLine(c) {
+  if (!c) return '';
+  const parts = [];
+  for (const k of ['potSize', 'potMaterial', 'drainage', 'lightSpot']) {
+    if (c[k] && COND_LABEL[k][c[k]]) parts.push(COND_LABEL[k][c[k]]);
+  }
+  return parts.join(', ');
 }
 
 // ---- Import ------------------------------------------------------------
@@ -211,6 +251,7 @@ export function speciesPrompt(name, opts = {}) {
   return [
     intro,
     'Output ONLY the fenced code block below — valid JSON, straight quotes, no trailing commas, no comments. Field notes: water_interval_days = typical days between waterings in the growing season for an average indoor pot; winter_factor = multiply that by this in winter dormancy (~1.2 for tropicals in a warm home, up to 3.0 for cacti); light is one of low/medium/bright/full; temp_min_c = minimum safe temperature in Celsius.',
+    'All field values must be in English, whatever language we are chatting in — my app stores them canonically and translates for display.',
     '',
     SPECIES_TEMPLATE,
   ].join('\n');
