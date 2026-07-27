@@ -20,6 +20,8 @@ const ASSETS = [
   './js/util.js',
   './js/coach.js',
   './js/quips.js',
+  './js/refphoto.js',
+  './js/symptomart.js',
   './js/ai.js',
   './js/handoff.js',
   './js/i18n.js',

@@ -11,6 +11,8 @@ import { getSettings, saveSettings } from './settings.js';
 import { welcomeMessage, careTips, scheduleWarnings, wateringAmount, pruningRepotTips, seasonalNudges } from './coach.js';
 import { buildHandoff, parseHandoffImport, summaryPrompt, speciesPrompt, parseSpeciesImport } from './handoff.js';
 import { unitSwitchMessage } from './quips.js';
+import { fetchSpeciesImage } from './refphoto.js';
+import { symptomArt } from './symptomart.js';
 import { analyzePlant, lookupSpeciesCare, hasApiKey, AI_MODELS, AIError } from './ai.js';
 import * as native from './native.js';
 import { buildPlantCareICS } from './calendar.js';
@@ -753,6 +755,55 @@ route(/^\/plant\/(.+)$/, async (id) => {
       )),
     ]),
   ]));
+
+  // What healthy looks like — a species reference photo (fetched once from
+  // Wikipedia, stored on-device) next to the owner's own best "good" photo.
+  const bestOwn = events.find((e) => e.type === 'health' && e.photo && e.health === 'good');
+  if (plant.refPhoto || bestOwn) {
+    view.append(el('h2', { class: 'section-title' }, 'What healthy looks like'));
+    const refGrid = el('div', { class: 'ref-grid' });
+    if (plant.refPhoto) {
+      refGrid.append(el('div', { class: 'ref-card' }, [
+        el('img', { src: plant.refPhoto.dataUrl, alt: plant.refPhoto.pageTitle || 'species reference', onClick: () => openImage(plant.refPhoto.dataUrl, plant.refPhoto.pageTitle) }),
+        el('div', { class: 'ref-cap' }, [
+          el('span', {}, 'Species reference'),
+          el('span', {}, ' · '),
+          el('a', { href: plant.refPhoto.pageUrl, target: '_blank', rel: 'noopener', 'data-noloc': '1' }, 'Wikipedia ↗'),
+        ]),
+      ]));
+    }
+    if (bestOwn) {
+      refGrid.append(el('div', { class: 'ref-card' }, [
+        el('img', { src: bestOwn.photo, alt: 'your plant at its best', onClick: () => openImage(bestOwn.photo, fmtDate(bestOwn.date)) }),
+        el('div', { class: 'ref-cap' }, [
+          el('span', {}, 'Yours at its best'),
+          el('span', {}, ` · ${fmtDate(bestOwn.date)}`),
+        ]),
+      ]));
+    }
+    view.append(refGrid);
+  }
+  // Fetch the reference once, in the background, the first time this page is
+  // open while online. Throttled via refPhotoTried so a species Wikipedia
+  // doesn't know isn't retried on every visit.
+  if (!plant.refPhoto && navigator.onLine !== false) {
+    const tried = plant.refPhotoTried ? Date.now() - new Date(plant.refPhotoTried).getTime() : Infinity;
+    if (tried > 7 * MS_PER_DAY) {
+      (async () => {
+        plant.refPhotoTried = new Date().toISOString();
+        const sp = plant.speciesId ? getSpecies(plant.speciesId) : null;
+        const img = await fetchSpeciesImage([
+          (sp && sp.latin) || plant.latin,
+          plant.latin,
+          sp && sp.name,
+        ]);
+        if (img) plant.refPhoto = img;
+        await db.putPlant(plant);
+        // Only re-render if the user is still looking at this plant.
+        if (img && location.hash.includes(id)) render();
+      })();
+    }
+  }
 
   // Pruning & repotting — seasonal, plant-type guidance for "when the time comes",
   // made time-aware by the last logged prune/repot, with a one-tap log on each.
@@ -2236,6 +2287,14 @@ function renderSymptomGrid(view, ctx) {
 
 function renderCauses(view, sym, ctx) {
   view.append(viewHeader(sym.title, { back: ctx.back }));
+  // Pattern diagram: WHERE a symptom shows is what separates the causes.
+  const art = symptomArt(sym.id);
+  if (art) {
+    view.append(el('div', { class: 'symptom-art' }, [
+      el('div', { html: art.svg }),
+      el('div', { class: 'symptom-art-caption', 'data-noloc': '1' }, art.caption),
+    ]));
+  }
   view.append(el('div', { class: 'diagnose-head' }, [
     el('span', { class: 'diagnose-emoji' }, sym.emoji),
     `On your ${ctx.name}, most likely first:`,
