@@ -275,8 +275,8 @@ route(/^\/(today)?$/, async () => {
     return;
   }
 
-  const overdue = dueTasks(plants, events, now, settings.hemisphere, 0);
-  const upcoming = dueTasks(plants, events, now, settings.hemisphere, 3).filter((t) => t.daysUntil > 0);
+  const overdue = mergeWaterFeedTasks(dueTasks(plants, events, now, settings.hemisphere, 0));
+  const upcoming = mergeWaterFeedTasks(dueTasks(plants, events, now, settings.hemisphere, 3).filter((t) => t.daysUntil > 0));
 
   // Summary counts
   const stats = plants.map((p) => overallStatus(p, events, now, settings.hemisphere));
@@ -354,10 +354,30 @@ function statCard(n, label, level) {
   ]);
 }
 
+// Feed rides along with watering (it's mixed into the can), so when a plant has
+// water and fertilize due on the same day we show ONE row: "Water + feed".
+function mergeWaterFeedTasks(tasks) {
+  const out = [];
+  for (const t of tasks) {
+    if (t.type === 'fertilize' &&
+        tasks.some((w) => w.type === 'water' && w.plant.id === t.plant.id && w.daysUntil === t.daysUntil)) {
+      continue; // folded into its watering row below
+    }
+    if (t.type === 'water' &&
+        tasks.some((f) => f.type === 'fertilize' && f.plant.id === t.plant.id && f.daysUntil === t.daysUntil)) {
+      out.push({ ...t, withFeed: true });
+      continue;
+    }
+    out.push(t);
+  }
+  return out;
+}
+
 function taskRow(task, now, onDone, upcoming = false) {
   const isWater = task.type === 'water';
-  const icon = isWater ? '💧' : '🌱';
-  const verb = isWater ? 'Water' : 'Feed';
+  const withFeed = !!task.withFeed;
+  const icon = withFeed ? '💧🌱' : isWater ? '💧' : '🌱';
+  const verb = withFeed ? 'Water + feed' : isWater ? 'Water' : 'Feed';
   const cls = STATE_CLASS[task.state] || 'muted';
   const when = task.daysUntil < 0
     ? `${-task.daysUntil} days overdue`
@@ -379,11 +399,12 @@ function taskRow(task, now, onDone, upcoming = false) {
       class: 'do-btn',
       onClick: async (e) => {
         e.stopPropagation();
-        await logCare(task.plant.id, task.type);
-        toast(`${task.plant.name}: logged ${isWater ? 'watering' : 'feeding'}`);
+        await logCare(task.plant.id, task.type); // merged rows carry type 'water'
+        if (withFeed) await logCare(task.plant.id, 'fertilize');
+        toast(`${task.plant.name}: logged ${withFeed ? 'watering + feeding' : isWater ? 'watering' : 'feeding'}`);
         onDone();
       },
-    }, isWater ? 'Water' : 'Feed'));
+    }, verb));
   }
   return row;
 }
@@ -746,7 +767,7 @@ route(/^\/plant\/(.+)$/, async (id) => {
     every: `every ${w.interval} days`,
     last: w.everDone ? fmtDate(w.lastDate) : 'not yet logged',
     due: w.due, daysUntil: w.daysUntil, state: w.state,
-    onDo: async () => { await logCare(id, 'water'); toast('Watering logged'); render(); },
+    onDo: () => logCareSmart(plant, 'water'),
     onDoDated: () => openLogDialog(plant, 'water'),
     doLabel: 'Log watering',
     foot: `💧 ${wateringAmount(plant).label}`,
@@ -757,7 +778,8 @@ route(/^\/plant\/(.+)$/, async (id) => {
       every: `every ${f.interval} days`,
       last: f.everDone ? fmtDate(f.lastDate) : 'not yet logged',
       due: f.due, daysUntil: f.daysUntil, state: f.state, paused: f.state === 'paused',
-      onDo: async () => { await logCare(id, 'fertilize'); toast('Feeding logged'); render(); },
+      withWater: f.withWater, // feed rides along with a watering — say so
+      onDo: () => logCareSmart(plant, 'fertilize'),
       onDoDated: () => openLogDialog(plant, 'fertilize'),
       doLabel: 'Log feeding',
       foot: (() => {
@@ -775,8 +797,8 @@ route(/^\/plant\/(.+)$/, async (id) => {
 
   // Quick log actions
   view.append(el('div', { class: 'quick-actions' }, [
-    quickBtn('💧', 'Water', () => quickLog(id, 'water')),
-    quickBtn('🌱', 'Feed', () => quickLog(id, 'fertilize')),
+    quickBtn('💧', 'Water', () => logCareSmart(plant, 'water')),
+    quickBtn('🌱', 'Feed', () => logCareSmart(plant, 'fertilize')),
     quickBtn('❤️', 'Health', () => openHealthDialog(plant)),
     quickBtn('📷', 'Photo', () => openPhotoDialog(plant)),
     quickBtn('✂️', 'More', () => openMoreDialog(plant)),
@@ -972,7 +994,7 @@ route(/^\/plant\/(.+)$/, async (id) => {
 // which keeps the Dutch natural ("Over 3 dagen" rather than "Water over 3 dagen").
 // Returns the final localized string directly (not via the DOM pass), because the
 // grid concatenates it with an emoji into one text node that localizeDOM can't match.
-function scheduleWhenText(daysUntil, paused = false) {
+function scheduleWhenText(daysUntil, paused = false, withWater = false) {
   const nl = getLang() === 'nl';
   if (paused) return nl ? 'Dit seizoen gepauzeerd' : 'Paused this season';
   if (daysUntil < 0) {
@@ -980,13 +1002,15 @@ function scheduleWhenText(daysUntil, paused = false) {
     return nl ? `${n} dag${n === 1 ? '' : 'en'} te laat` : `${n} days overdue`;
   }
   if (daysUntil === 0) return nl ? 'Vandaag aan de beurt' : 'Due today';
+  // Feed rides along with the watering can — say so instead of a bare date.
+  if (withWater) return nl ? 'Bij de volgende gietbeurt' : 'With next watering';
   const rel = fmtRelative(daysUntil);
   return nl ? rel.charAt(0).toUpperCase() + rel.slice(1) : `Due ${rel}`;
 }
 
-function scheduleCard({ icon, title, every, last, due, daysUntil, state, paused, onDo, onDoDated, doLabel, foot }) {
+function scheduleCard({ icon, title, every, last, due, daysUntil, state, paused, withWater, onDo, onDoDated, doLabel, foot }) {
   const cls = STATE_CLASS[state] || 'muted';
-  const whenText = scheduleWhenText(daysUntil, paused);
+  const whenText = scheduleWhenText(daysUntil, paused, withWater);
   return el('div', { class: `sched-card sched-${cls}` }, [
     el('div', { class: 'sched-head' }, [
       el('span', { class: 'sched-icon' }, icon),
@@ -1023,8 +1047,8 @@ function openLogDialog(plant, type) {
     el('div', { class: 'modal-actions' }, [
       el('button', { class: 'btn btn-ghost', onClick: () => m.close() }, 'Cancel'),
       el('button', { class: 'btn btn-primary', onClick: async () => {
-        await logCare(plant.id, type, dateInput.value);
-        m.close(); toast(isWater ? 'Watering logged' : 'Feeding logged'); render();
+        m.close();
+        await logCareSmart(plant, type, dateInput.value); // toasts, renders, and asks about the companion log
       } }, 'Log'),
     ]),
   ]);
@@ -1065,9 +1089,59 @@ function quickBtn(icon, label, onClick) {
   ]);
 }
 
-async function quickLog(plantId, type) {
-  await logCare(plantId, type);
-  toast(type === 'water' ? 'Watering logged' : 'Feeding logged');
+// Log water/feed while keeping the two in sync: liquid feed is mixed into the
+// watering can, so a watering while feed is "armed" asks whether the feed went
+// in too, and a feeding with no same-day watering offers to log the watering.
+// Handles its own toasts and re-renders (the prompts land after the render).
+async function logCareSmart(plant, type, dateISO = todayISO()) {
+  const settings = getSettings();
+  const events = await db.getEvents(plant.id);
+
+  if (type === 'water') {
+    const f = feedStatus(plant, events, new Date(), settings.hemisphere);
+    const feedArmed = !!(f && f.armed);
+    await logCare(plant.id, 'water', dateISO);
+    toast('Watering logged');
+    render();
+    if (feedArmed) {
+      const m = modal([
+        el('h3', { class: 'modal-title' }, 'Feed was due too'),
+        el('p', { class: 'modal-text' }, 'Feed is mixed into the watering — did you add it this time?'),
+        el('div', { class: 'modal-actions' }, [
+          el('button', { class: 'btn btn-ghost', onClick: () => m.close() }, 'Not this time'),
+          el('button', { class: 'btn btn-primary', onClick: async () => {
+            await logCare(plant.id, 'fertilize', dateISO);
+            m.close(); toast('Feeding logged'); render();
+          } }, 'Yes, fed it'),
+        ]),
+      ]);
+    }
+    return;
+  }
+
+  if (type === 'fertilize') {
+    const day = dateInputToISO(dateISO).slice(0, 10);
+    const wateredSameDay = events.some((e) => e.type === 'water' && String(e.date).slice(0, 10) === day);
+    await logCare(plant.id, 'fertilize', dateISO);
+    toast('Feeding logged');
+    render();
+    if (!wateredSameDay) {
+      const m = modal([
+        el('h3', { class: 'modal-title' }, 'Watered as well?'),
+        el('p', { class: 'modal-text' }, 'Feed is usually mixed into a watering — log the watering too?'),
+        el('div', { class: 'modal-actions' }, [
+          el('button', { class: 'btn btn-ghost', onClick: () => m.close() }, 'No'),
+          el('button', { class: 'btn btn-primary', onClick: async () => {
+            await logCare(plant.id, 'water', dateISO);
+            m.close(); toast('Watering logged'); render();
+          } }, 'Yes, log watering'),
+        ]),
+      ]);
+    }
+    return;
+  }
+
+  await logCare(plant.id, type, dateISO);
   render();
 }
 
@@ -2830,13 +2904,29 @@ function reminderOverdueDays(dueISO, now) {
   return Math.round((s(now) - s(dueISO)) / (24 * 60 * 60 * 1000));
 }
 
+// Feed rides along with watering (it's mixed into the can), so a plant with
+// water AND fertilize due together becomes ONE task: "water it, mix in the
+// feed" — never two competing reminders. Mirrored in sw.js; keep in sync.
+function reminderMergeWaterFeed(ann) {
+  const out = [];
+  for (const t of ann) {
+    if (t.type === 'fertilize' && ann.some((w) => w.type === 'water' && w.plantId === t.plantId)) continue;
+    if (t.type === 'water' && ann.some((f) => f.type === 'fertilize' && f.plantId === t.plantId)) {
+      out.push({ ...t, withFeed: true });
+    } else {
+      out.push(t);
+    }
+  }
+  return out;
+}
+
 // Turn a set of due/overdue tasks into an escalating, plant-specific message.
 // Names the at-risk plant when it's just one or two, summarizes when it's many,
 // and always surfaces the most-overdue plant so it doesn't get lost. Mirrored in
 // sw.js (the background notifier). Returns { title, body } or null.
 function formatReminder(tasks, now, lang = getLang()) {
   if (!tasks.length) return null;
-  const ann = tasks.map((t) => ({ ...t, over: reminderOverdueDays(t.due, now) }));
+  const ann = reminderMergeWaterFeed(tasks.map((t) => ({ ...t, over: reminderOverdueDays(t.due, now) })));
   return lang === 'nl' ? reminderNL(ann) : reminderEN(ann);
 }
 
@@ -2846,17 +2936,20 @@ function reminderNL(ann) {
   if (ann.length === 1) {
     const t = ann[0];
     if (t.over >= 1) {
+      if (t.type === 'water' && t.withFeed) return { title: `🚨 ${t.name} snakt naar water`, body: `Al ${dagen(t.over)} te laat — geef 'm snel water en doe de voeding er meteen bij.` };
       if (t.type === 'water') return { title: `🚨 ${t.name} snakt naar water`, body: `Al ${dagen(t.over)} te laat — geef 'm snel water, anders loopt 'ie gevaar.` };
       if (t.type === 'fertilize') return { title: `🌱 ${t.name} heeft voeding nodig`, body: `Al ${dagen(t.over)} te laat met voeden.` };
       return { title: `📸 Tijd voor een nieuwe foto`, body: `Je hebt ${t.name} al ${dagen(t.over)} niet vastgelegd.` };
     }
+    if (t.type === 'water' && t.withFeed) return { title: '🌿 Plantenzorg', body: `${t.name} wil vandaag water — doe er meteen de voeding bij.` };
     if (t.type === 'water') return { title: '🌿 Plantenzorg', body: `${t.name} wil vandaag water.` };
     if (t.type === 'fertilize') return { title: '🌿 Plantenzorg', body: `${t.name} is vandaag toe aan voeding.` };
     return { title: '🌿 Plantenzorg', body: `Maak vandaag een nieuwe foto van ${t.name}.` };
   }
   const n = (type) => ann.filter((t) => t.type === type).length;
+  const wf = ann.filter((t) => t.withFeed).length;
   const parts = [];
-  if (n('water')) parts.push(`${n('water')} ${n('water') === 1 ? 'plant' : 'planten'} water geven`);
+  if (n('water')) parts.push(`${n('water')} ${n('water') === 1 ? 'plant' : 'planten'} water geven${wf ? ` (bij ${wf} ook voeding)` : ''}`);
   if (n('fertilize')) parts.push(`${n('fertilize')} ${n('fertilize') === 1 ? 'plant' : 'planten'} voeden`);
   if (n('photo')) parts.push(`${n('photo')} nieuwe foto${n('photo') === 1 ? '' : "'s"}`);
   let body = `${parts.join(', ')}.`;
@@ -2870,12 +2963,17 @@ function reminderEN(ann) {
   const days = (n) => `${n} day${n === 1 ? '' : 's'}`;
   if (ann.length === 1) {
     const t = ann[0];
-    if (t.over >= 1) return { title: `🚨 ${t.name} is overdue`, body: `${days(t.over)} overdue for ${verb[t.type]} — it's at risk.` };
+    if (t.over >= 1) {
+      if (t.type === 'water' && t.withFeed) return { title: `🚨 ${t.name} is overdue`, body: `${days(t.over)} overdue for watering — water it now and mix in the feed.` };
+      return { title: `🚨 ${t.name} is overdue`, body: `${days(t.over)} overdue for ${verb[t.type]} — it's at risk.` };
+    }
+    if (t.type === 'water' && t.withFeed) return { title: '🌿 Plant care', body: `${t.name} needs watering today — mix in the feed while you're at it.` };
     return { title: '🌿 Plant care', body: `${t.name} needs ${verb[t.type]} today.` };
   }
   const n = (type) => ann.filter((t) => t.type === type).length;
+  const wf = ann.filter((t) => t.withFeed).length;
   const parts = [];
-  if (n('water')) parts.push(`${n('water')} to water`);
+  if (n('water')) parts.push(`${n('water')} to water${wf ? ` (${wf} with feed)` : ''}`);
   if (n('fertilize')) parts.push(`${n('fertilize')} to feed`);
   if (n('photo')) parts.push(`${n('photo')} progress photo${n('photo') > 1 ? 's' : ''}`);
   let body = `${parts.join(', ')}.`;

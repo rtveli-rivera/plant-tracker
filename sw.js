@@ -158,9 +158,25 @@ function reminderOverdueDays(dueISO, now) {
   const s = (x) => { const y = new Date(x); y.setHours(0, 0, 0, 0); return y.getTime(); };
   return Math.round((s(now) - s(dueISO)) / (24 * 60 * 60 * 1000));
 }
+// Feed rides along with watering (it's mixed into the can), so a plant with
+// water AND fertilize due together becomes ONE task: "water it, mix in the
+// feed" — never two competing reminders. Mirror of js/app.js; keep in sync.
+function reminderMergeWaterFeed(ann) {
+  const out = [];
+  for (const t of ann) {
+    if (t.type === 'fertilize' && ann.some((w) => w.type === 'water' && w.plantId === t.plantId)) continue;
+    if (t.type === 'water' && ann.some((f) => f.type === 'fertilize' && f.plantId === t.plantId)) {
+      out.push({ ...t, withFeed: true });
+    } else {
+      out.push(t);
+    }
+  }
+  return out;
+}
+
 function formatReminder(tasks, now, lang) {
   if (!tasks.length) return null;
-  const ann = tasks.map((t) => ({ ...t, over: reminderOverdueDays(t.due, now) }));
+  const ann = reminderMergeWaterFeed(tasks.map((t) => ({ ...t, over: reminderOverdueDays(t.due, now) })));
   return lang === 'nl' ? reminderNL(ann) : reminderEN(ann);
 }
 
@@ -170,17 +186,20 @@ function reminderNL(ann) {
   if (ann.length === 1) {
     const t = ann[0];
     if (t.over >= 1) {
+      if (t.type === 'water' && t.withFeed) return { title: `🚨 ${t.name} snakt naar water`, body: `Al ${dagen(t.over)} te laat — geef 'm snel water en doe de voeding er meteen bij.` };
       if (t.type === 'water') return { title: `🚨 ${t.name} snakt naar water`, body: `Al ${dagen(t.over)} te laat — geef 'm snel water, anders loopt 'ie gevaar.` };
       if (t.type === 'fertilize') return { title: `🌱 ${t.name} heeft voeding nodig`, body: `Al ${dagen(t.over)} te laat met voeden.` };
       return { title: `📸 Tijd voor een nieuwe foto`, body: `Je hebt ${t.name} al ${dagen(t.over)} niet vastgelegd.` };
     }
+    if (t.type === 'water' && t.withFeed) return { title: '🌿 Plantenzorg', body: `${t.name} wil vandaag water — doe er meteen de voeding bij.` };
     if (t.type === 'water') return { title: '🌿 Plantenzorg', body: `${t.name} wil vandaag water.` };
     if (t.type === 'fertilize') return { title: '🌿 Plantenzorg', body: `${t.name} is vandaag toe aan voeding.` };
     return { title: '🌿 Plantenzorg', body: `Maak vandaag een nieuwe foto van ${t.name}.` };
   }
   const n = (type) => ann.filter((t) => t.type === type).length;
+  const wf = ann.filter((t) => t.withFeed).length;
   const parts = [];
-  if (n('water')) parts.push(`${n('water')} ${n('water') === 1 ? 'plant' : 'planten'} water geven`);
+  if (n('water')) parts.push(`${n('water')} ${n('water') === 1 ? 'plant' : 'planten'} water geven${wf ? ` (bij ${wf} ook voeding)` : ''}`);
   if (n('fertilize')) parts.push(`${n('fertilize')} ${n('fertilize') === 1 ? 'plant' : 'planten'} voeden`);
   if (n('photo')) parts.push(`${n('photo')} nieuwe foto${n('photo') === 1 ? '' : "'s"}`);
   let body = `${parts.join(', ')}.`;
@@ -194,12 +213,17 @@ function reminderEN(ann) {
   const days = (n) => `${n} day${n === 1 ? '' : 's'}`;
   if (ann.length === 1) {
     const t = ann[0];
-    if (t.over >= 1) return { title: `🚨 ${t.name} is overdue`, body: `${days(t.over)} overdue for ${verb[t.type]} — it's at risk.` };
+    if (t.over >= 1) {
+      if (t.type === 'water' && t.withFeed) return { title: `🚨 ${t.name} is overdue`, body: `${days(t.over)} overdue for watering — water it now and mix in the feed.` };
+      return { title: `🚨 ${t.name} is overdue`, body: `${days(t.over)} overdue for ${verb[t.type]} — it's at risk.` };
+    }
+    if (t.type === 'water' && t.withFeed) return { title: '🌿 Plant care', body: `${t.name} needs watering today — mix in the feed while you're at it.` };
     return { title: '🌿 Plant care', body: `${t.name} needs ${verb[t.type]} today.` };
   }
   const n = (type) => ann.filter((t) => t.type === type).length;
+  const wf = ann.filter((t) => t.withFeed).length;
   const parts = [];
-  if (n('water')) parts.push(`${n('water')} to water`);
+  if (n('water')) parts.push(`${n('water')} to water${wf ? ` (${wf} with feed)` : ''}`);
   if (n('fertilize')) parts.push(`${n('fertilize')} to feed`);
   if (n('photo')) parts.push(`${n('photo')} progress photo${n('photo') > 1 ? 's' : ''}`);
   let body = `${parts.join(', ')}.`;

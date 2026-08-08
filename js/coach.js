@@ -127,8 +127,8 @@ export function careTips(plant, settings, now = new Date()) {
       icon: '🌱',
       text: feeding
         ? (nl
-          ? `Voed met ${feedWith} ongeveer elke ${effectiveFeedInterval(plant)} dagen zolang hij actief groeit.`
-          : `Feed with ${feedWith} about every ${effectiveFeedInterval(plant)} days while it's actively growing.`)
+          ? `Voed met ${feedWith} ongeveer elke ${effectiveFeedInterval(plant)} dagen zolang hij actief groeit — meng 'm door het gietwater in plaats van op droge aarde te voeden.`
+          : `Feed with ${feedWith} about every ${effectiveFeedInterval(plant)} days while it's actively growing — mix it into a watering rather than feeding dry soil.`)
         : (nl
           ? `Even geen mest nu — voeden begint weer in de lente als de groei op gang komt.`
           : `Hold off on fertilizer for now — feeding resumes in spring when growth picks back up.`),

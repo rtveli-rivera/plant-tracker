@@ -94,6 +94,13 @@ export function waterStatus(plant, events, now, hemisphere) {
 }
 
 // Compute fertilizing status. Feeding pauses seasonally.
+//
+// Feed rides along with watering: liquid fertilizer is mixed into the watering
+// can, so a feed due between waterings must NOT claim its own day — that would
+// push people to water early (overwatering) or feed onto dry roots. Instead the
+// elapsed interval "arms" the feed, and its due date snaps to the watering it
+// will ride on. Late is harmless (the interval is a minimum spacing); early is
+// what burns roots — so we only ever round toward the next watering.
 export function feedStatus(plant, events, now, hemisphere) {
   const profile = plant.profile;
   if (!profile.fertilize) return null; // this plant isn't fed on a schedule
@@ -102,7 +109,14 @@ export function feedStatus(plant, events, now, hemisphere) {
   const active = shouldFeed(season, profile.feedWinter);
   const last = lastEvent(events, plant.id, 'fertilize');
   const lastDate = last ? new Date(last.date) : (plant.acquiredDate ? new Date(plant.acquiredDate) : new Date(plant.createdAt));
-  const due = addDays(lastDate, interval);
+  const rawDue = addDays(lastDate, interval);       // when the interval elapses
+  const rawDaysUntil = daysBetween(now, rawDue);
+  // The watering this feed will ride on: the next water due at/after rawDue.
+  // (We only know the next watering; a feed arming later than that keeps its
+  // raw date as the best estimate until the schedule catches up.)
+  const water = waterStatus(plant, events, now, hemisphere);
+  const withWater = water.due >= rawDue;
+  const due = withWater ? water.due : rawDue;
   const daysUntil = daysBetween(now, due);
   return {
     type: 'fertilize',
@@ -110,6 +124,10 @@ export function feedStatus(plant, events, now, hemisphere) {
     lastDate,
     due,
     daysUntil,
+    rawDue,
+    rawDaysUntil,
+    armed: active && rawDaysUntil <= 0, // interval elapsed — feed at the next watering
+    withWater,                          // due date coincides with a watering
     everDone: !!last,
     paused: !active,
     state: active ? statusState(daysUntil) : 'paused',
